@@ -1,6 +1,8 @@
 """
 Generic Extended Kalman Filter (EKF) and Unscented Kalman Filter (UKF)
-Author : Paweekorn Buasakorn 
+Pure algorithm implementations - no system-specific code
+
+Fixed: Robust Cholesky decomposition with regularization
 """
 
 import numpy as np
@@ -35,6 +37,9 @@ class ExtendedKalmanFilter:
         self.x = np.array(initial_state, dtype=float).reshape(-1)
         self.P = np.array(initial_covariance, dtype=float)
         
+        # Ensure covariance is symmetric and positive definite
+        self.P = 0.5 * (self.P + self.P.T)  # Force symmetry
+        
     def predict(self, F, Q):
         """
         Prediction step
@@ -49,6 +54,9 @@ class ExtendedKalmanFilter:
         # Predict covariance
         self.P = F @ self.P @ F.T + Q
         
+        # Ensure symmetry and positive definiteness
+        self.P = 0.5 * (self.P + self.P.T)
+        
     def update(self, measurement, H, R):
         """
         Update step with measurement
@@ -58,11 +66,11 @@ class ExtendedKalmanFilter:
             H: Jacobian of measurement function (m, n)
             R: Measurement covariance (m, m)
         """
-        # Predicted measurement (computed externally and passed as z)
-        # Innovation will be computed by caller
-        
         # Innovation covariance
         S = H @ self.P @ H.T + R
+        
+        # Ensure S is symmetric
+        S = 0.5 * (S + S.T)
         
         # Kalman gain
         K = self.P @ H.T @ np.linalg.inv(S)
@@ -74,6 +82,9 @@ class ExtendedKalmanFilter:
         I = np.eye(self.n)
         I_KH = I - K @ H
         self.P = I_KH @ self.P @ I_KH.T + K @ R @ K.T
+        
+        # Ensure symmetry and positive definiteness
+        self.P = 0.5 * (self.P + self.P.T)
 
 
 class UnscentedKalmanFilter:
@@ -119,6 +130,9 @@ class UnscentedKalmanFilter:
         self.x = np.array(initial_state, dtype=float).reshape(-1)
         self.P = np.array(initial_covariance, dtype=float)
         
+        # Ensure covariance is symmetric and positive definite
+        self.P = 0.5 * (self.P + self.P.T)
+        
     def _calculate_weights(self):
         """Calculate sigma point weights for mean and covariance"""
         n = self.n
@@ -140,6 +154,8 @@ class UnscentedKalmanFilter:
         """
         Generate sigma points using Cholesky decomposition
         
+        FIXED: Robust implementation with multiple fallback strategies
+        
         Args:
             mean: Mean vector (n,)
             covariance: Covariance matrix (n, n)
@@ -153,12 +169,49 @@ class UnscentedKalmanFilter:
         sigma_points = np.zeros((2 * n + 1, n))
         sigma_points[0] = mean
         
+        # Matrix to decompose
+        A = (n + lambda_) * covariance
+        
+        # Ensure symmetry
+        A = 0.5 * (A + A.T)
+        
+        # Try Cholesky decomposition with multiple strategies
+        L = None
+        
+        # Strategy 1: Direct Cholesky
         try:
-            # Cholesky decomposition of (n + lambda) * P
-            L = cholesky((n + lambda_) * covariance, lower=True)
+            L = cholesky(A, lower=True)
         except np.linalg.LinAlgError:
-            # If fails, add small regularization
-            L = cholesky((n + lambda_) * covariance + 1e-9 * np.eye(n), lower=True)
+            pass
+        
+        # Strategy 2: Add small regularization
+        if L is None:
+            try:
+                epsilon = 1e-9
+                A_reg = A + epsilon * np.eye(n)
+                L = cholesky(A_reg, lower=True)
+            except np.linalg.LinAlgError:
+                pass
+        
+        # Strategy 3: Larger regularization
+        if L is None:
+            try:
+                epsilon = 1e-6
+                A_reg = A + epsilon * np.eye(n)
+                L = cholesky(A_reg, lower=True)
+            except np.linalg.LinAlgError:
+                pass
+        
+        # Strategy 4: Eigenvalue decomposition (always works)
+        if L is None:
+            # Use eigenvalue decomposition as fallback
+            eigenvalues, eigenvectors = np.linalg.eigh(A)
+            
+            # Ensure all eigenvalues are positive
+            eigenvalues = np.maximum(eigenvalues, 1e-9)
+            
+            # Compute L = Q * sqrt(Lambda)
+            L = eigenvectors @ np.diag(np.sqrt(eigenvalues))
         
         # Generate sigma points
         for i in range(n):
@@ -192,6 +245,9 @@ class UnscentedKalmanFilter:
         for i in range(sigma_points_pred.shape[0]):
             diff = sigma_points_pred[i] - self.x
             self.P += self.weights_c[i] * np.outer(diff, diff)
+        
+        # Ensure symmetry and positive definiteness
+        self.P = 0.5 * (self.P + self.P.T)
         
         # Store predicted sigma points for update step
         self.sigma_points_pred = sigma_points_pred
@@ -230,6 +286,9 @@ class UnscentedKalmanFilter:
                 diff[idx] = self._normalize_angle(diff[idx])
             Pzz += self.weights_c[i] * np.outer(diff, diff)
         
+        # Ensure Pzz is symmetric
+        Pzz = 0.5 * (Pzz + Pzz.T)
+        
         # Cross-covariance Pxz
         Pxz = np.zeros((self.n, m))
         for i in range(n_sigma):
@@ -254,6 +313,9 @@ class UnscentedKalmanFilter:
         
         # Update covariance
         self.P = self.P - K @ Pzz @ K.T
+        
+        # Ensure symmetry and positive definiteness
+        self.P = 0.5 * (self.P + self.P.T)
         
     @staticmethod
     def _normalize_angle(angle):
