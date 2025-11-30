@@ -3,34 +3,30 @@ import matplotlib.pyplot as plt
 from NonlinearFiltered import ExtendedKalmanFilter, UnscentedKalmanFilter
 
 # Time parameters
-DT = 0.01  # Δt = 1 second
-DURATION = 35.0  # 35 measurements
+DT = 0.01
+DURATION = 35.0
 
 # Process noise
-SIGMA_A = 1  # σ_a = 0.2 m/s²
+SIGMA_A = 1
 
 # Measurement noise
-SIGMA_RANGE = 5.0  # σ_rm = 5 m
-SIGMA_BEARING = 0.01  # σ_φm = 0.0087 rad (~0.5 degrees)
+SIGMA_RANGE = 5.0
+SIGMA_BEARING = 0.01
 
-# Initial estimate - rough initialization
-INITIAL_STATE = np.array([20, 6, 0.0, 60, 1, 0.0])
+# Initial estimate
+INITIAL_STATE = np.array([200, 60, 0.0, 600, 10, 0.0])
 INITIAL_COV = np.diag([50.0, 50.0, 50.0, 50.0, 50.0, 50.0])
 
 # x vx ax y vy ay
 INITIAL_TRAJ = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-# ============================================================================
-# TRUE TRAJECTORY GENERATION
-# ============================================================================
+
 
 def generate_true_trajectory(duration=DURATION, dt=DT):
     timestamps = np.arange(0, duration + dt, dt)
     n_steps = len(timestamps)
     
-    # Pre-allocate array
     true_states = np.zeros((n_steps, 6))
     
-    # Initial conditions
     x, y = 0.0, 0.0
     vx, vy = 0.0, 0.0
     
@@ -44,10 +40,9 @@ def generate_true_trajectory(duration=DURATION, dt=DT):
         else:
             ax = -18.0
             ay = 6.0
-        # Store current state
+        
         true_states[i] = [x, vx, ax, y, vy, ay]
         
-        # Update for next iteration
         vx += ax * dt
         vy += ay * dt
         x += vx * dt + 0.5*ax*dt*dt
@@ -58,23 +53,13 @@ def generate_true_trajectory(duration=DURATION, dt=DT):
 
 def generate_measurements(true_states, sigma_range=SIGMA_RANGE, sigma_bearing=SIGMA_BEARING, seed=None):
     """
-    Generate noisy radar measurements from TRUE states with NON-GAUSSIAN noise
+    Generate noisy radar measurements with non-Gaussian noise.
     
-    Measurement model: z = h(x) + v, where v is NON-GAUSSIAN
+    Measurement model: z = h(x) + v
     h(x) = [sqrt(x² + y²), atan2(y, x)]
     
-    Non-Gaussian noise types:
-    - Range: Mixture of Gaussian + Uniform (heavy-tailed with outliers)
-    - Bearing: Laplacian distribution (sharper peak, heavier tails than Gaussian)
-    
-    Args:
-        true_states: True states (N, 6)
-        sigma_range: Range noise scale (m)
-        sigma_bearing: Bearing noise scale (rad)
-        seed: Random seed for reproducibility
-        
-    Returns:
-        measurements: (N, 2) array [range, bearing]
+    Range noise: Mixture of Gaussian + Uniform (heavy-tailed with outliers)
+    Bearing noise: Laplacian distribution (sharper peak, heavier tails)
     """
     if seed is not None:
         np.random.seed(seed)
@@ -86,27 +71,18 @@ def generate_measurements(true_states, sigma_range=SIGMA_RANGE, sigma_bearing=SI
         x_pos = true_states[i, 0]
         y_pos = true_states[i, 3]
         
-        # TRUE measurement (noiseless)
         true_range = np.sqrt(x_pos**2 + y_pos**2)
         true_bearing = np.arctan2(y_pos, x_pos)
         
-        # NON-GAUSSIAN NOISE for range
-        # Mixture: 70% Gaussian + 30% Uniform (creates heavy tails and outliers)
+        # Non-Gaussian range noise: Mixture model
         if np.random.rand() < 0.9:
-            # Gaussian component
             range_noise = np.random.randn() * sigma_range
         else:
-            # Uniform component (outliers)
             range_noise = 15 + np.random.uniform(-6*sigma_range, 2*sigma_range)
         
-        # NON-GAUSSIAN NOISE for bearing
-        # Laplacian distribution (double exponential) - sharper peak, heavier tails
+        # Laplacian bearing noise
         bearing_noise = np.random.laplace(0, sigma_bearing / np.sqrt(2))
         
-        # Alternative: Cauchy distribution (very heavy tails - uncomment to use)
-        # bearing_noise = np.random.standard_cauchy() * sigma_bearing * 0.5
-        
-        # Add noise
         noisy_range = true_range + range_noise
         noisy_bearing = true_bearing + bearing_noise
         
@@ -115,19 +91,15 @@ def generate_measurements(true_states, sigma_range=SIGMA_RANGE, sigma_bearing=SI
     return measurements
 
 
-# ============================================================================
-# SYSTEM MODEL DEFINITIONS
-# ============================================================================
-
 class VehicleDynamics:
-    """Vehicle dynamics model - 6D state"""
+    """6D vehicle dynamics model"""
     
     def __init__(self, dt=DT, sigma_a=SIGMA_A):
         self.dt = dt
         self.sigma_a = sigma_a
         
     def get_F(self):
-        """State transition matrix (Page 258)"""
+        """State transition matrix"""
         dt = self.dt
         return np.array([
             [1, dt, 0.5*dt**2, 0, 0, 0],
@@ -139,11 +111,11 @@ class VehicleDynamics:
         ])
     
     def state_transition_function(self, state):
-        """For UKF sigma point propagation"""
+        """State transition for UKF"""
         return self.get_F() @ state
     
     def get_Q(self):
-        """Process noise covariance (Page 258)"""
+        """Process noise covariance"""
         dt = self.dt
         dt2 = dt * dt
         dt3 = dt2 * dt
@@ -210,10 +182,6 @@ def normalize_angle(angle):
     return angle
 
 
-# ============================================================================
-# FILTER IMPLEMENTATIONS
-# ============================================================================
-
 def run_ekf(measurements, initial_state, initial_cov):
     """Run EKF"""
     dynamics = VehicleDynamics()
@@ -234,10 +202,8 @@ def run_ekf(measurements, initial_state, initial_cov):
     R = radar.get_R()
     
     for i in range(1, n_steps):
-        # Predict
         ekf.predict(F, Q)
         
-        # Update
         z_pred = radar.h(ekf.x)
         innovation = measurements[i] - z_pred
         innovation[1] = normalize_angle(innovation[1])
@@ -270,10 +236,7 @@ def run_ukf(measurements, initial_state, initial_cov):
     R = radar.get_R()
     
     for i in range(1, n_steps):
-        # Predict
         ukf.predict(dynamics.state_transition_function, Q)
-        
-        # Update
         ukf.update(measurements[i], radar.h, R, angle_indices=[1])
         
         states[i] = ukf.x
@@ -282,69 +245,47 @@ def run_ukf(measurements, initial_state, initial_cov):
     return states, covariances
 
 
-# ============================================================================
-# MAIN SIMULATION
-# ============================================================================
-
 def run_simulation(seed=42):
-    """
-    Complete simulation: TRUE → Measurements → Estimates
+    """Complete simulation: TRUE → Measurements → Estimates"""
+    print("\n" + "="*70)
+    print("KALMAN FILTER SIMULATION")
+    print("="*70)
     
-    Args:
-        seed: Random seed for reproducibility
-        
-    Returns:
-        Dictionary with all results
-    """
-    print(f"\n{'='*70}")
-    print("COMPLETE KALMAN FILTER SIMULATION")
-    print(f"{'='*70}\n")
+    print(f"\nParameters:")
+    print(f"  Δt = {DT} s, Duration = {DURATION} s")
+    print(f"  σ_a = {SIGMA_A} m/s², σ_range = {SIGMA_RANGE} m, σ_bearing = {SIGMA_BEARING:.4f} rad")
     
-    print("Parameters (from book pages 258-259):")
-    print(f"  Δt = {DT} s")
-    print(f"  Duration = {DURATION} s")
-    print(f"  σ_a = {SIGMA_A} m/s²")
-    print(f"  σ_range = {SIGMA_RANGE} m")
-    print(f"  σ_bearing = {SIGMA_BEARING:.4f} rad (~{np.rad2deg(SIGMA_BEARING):.2f}°)")
-    
-    # Step 1: Generate TRUE trajectory
-    print(f"\nStep 1: Generating TRUE trajectory with piecewise constant acceleration...")
+    print(f"\nStep 1: Generating TRUE trajectory...")
     true_states, timestamps = generate_true_trajectory(DURATION, DT)
-    print(f"  → Generated {len(true_states)} states over {DURATION}s")
-    print(f"  → Start: ({true_states[0,0]:.1f}, {true_states[0,3]:.1f})m | End: ({true_states[-1,0]:.1f}, {true_states[-1,3]:.1f})m")
+    print(f"  Generated {len(true_states)} states over {DURATION}s")
+    print(f"  Start: ({true_states[0,0]:.1f}, {true_states[0,3]:.1f})m | End: ({true_states[-1,0]:.1f}, {true_states[-1,3]:.1f})m")
     
-    # Step 2: Generate measurements from TRUE + NON-GAUSSIAN noise
-    print(f"\nStep 2: Generating noisy measurements with NON-GAUSSIAN noise...")
+    print(f"\nStep 2: Generating noisy measurements...")
     measurements = generate_measurements(true_states, SIGMA_RANGE, SIGMA_BEARING, seed)
     
-    # Calculate measurement errors
     true_measurements = np.array([RadarMeasurementModel.h(s) for s in true_states])
     meas_range_errors = measurements[:, 0] - true_measurements[:, 0]
     meas_bearing_errors = measurements[:, 1] - true_measurements[:, 1]
     
-    print(f"  → Generated {len(measurements)} measurements")
-    print(f"  → Range noise: Gaussian-Uniform mixture (70%-30%)")
-    print(f"  → Bearing noise: Laplacian distribution")
-    print(f"  → Range error: μ={np.mean(meas_range_errors):.2f}m, σ={np.std(meas_range_errors):.2f}m")
-    print(f"  → Bearing error: μ={np.rad2deg(np.mean(meas_bearing_errors)):.3f}°, σ={np.rad2deg(np.std(meas_bearing_errors)):.3f}°")
+    print(f"  Generated {len(measurements)} measurements")
+    print(f"  Range noise: Gaussian-Uniform mixture")
+    print(f"  Bearing noise: Laplacian distribution")
+    print(f"  Range error: μ={np.mean(meas_range_errors):.2f}m, σ={np.std(meas_range_errors):.2f}m")
+    print(f"  Bearing error: μ={np.rad2deg(np.mean(meas_bearing_errors)):.3f}°, σ={np.rad2deg(np.std(meas_bearing_errors)):.3f}°")
     
-    # Step 3: Initialize filters (rough initialization)
     print(f"\nStep 3: Initializing filters...")
     initial_error = np.linalg.norm(true_states[0, [0, 3]] - INITIAL_STATE[[0, 3]])
-    print(f"  → Initial estimate: ({INITIAL_STATE[0]:.1f}, {INITIAL_STATE[3]:.1f})m | True: ({true_states[0,0]:.1f}, {true_states[0,3]:.1f})m")
-    print(f"  → Initial error: {initial_error:.1f}m | Covariance: diag([50]×6)")
+    print(f"  Initial estimate: ({INITIAL_STATE[0]:.1f}, {INITIAL_STATE[3]:.1f})m | True: ({true_states[0,0]:.1f}, {true_states[0,3]:.1f})m")
+    print(f"  Initial error: {initial_error:.1f}m | Covariance: diag([50]×6)")
     
-    # Step 4: Run EKF
     print(f"\nStep 4: Running Extended Kalman Filter...")
     ekf_states, ekf_covs = run_ekf(measurements, INITIAL_STATE, INITIAL_COV)
     print(f"  ✓ Completed {len(ekf_states)} iterations")
     
-    # Step 5: Run UKF
     print(f"\nStep 5: Running Unscented Kalman Filter...")
     ukf_states, ukf_covs = run_ukf(measurements, INITIAL_STATE, INITIAL_COV)
     print(f"  ✓ Completed {len(ukf_states)} iterations")
     
-    # Step 6: Calculate errors
     print(f"\nStep 6: Calculating estimation errors...")
     
     ekf_pos_errors = np.sqrt((true_states[:, 0] - ekf_states[:, 0])**2 + 
@@ -363,7 +304,6 @@ def run_simulation(seed=42):
     ekf_vel_rmse = np.sqrt(np.mean(ekf_vel_errors**2))
     ukf_vel_rmse = np.sqrt(np.mean(ukf_vel_errors**2))
     
-    # Print results
     print(f"\n{'='*70}")
     print("RESULTS")
     print(f"{'='*70}\n")
@@ -401,10 +341,6 @@ def run_simulation(seed=42):
         'ukf_rmse': ukf_rmse
     }
 
-
-# ============================================================================
-# VISUALIZATION
-# ============================================================================
 
 def plot_results(results):
     """Create comprehensive visualization"""
@@ -445,7 +381,7 @@ def plot_results(results):
     ax2.legend()
     ax2.grid(True, alpha=0.3)
     
-    # 3. X Position
+    # X Position
     ax3 = plt.subplot(3, 3, 3)
     ax3.plot(timestamps, true_states[:, 0], 'g-', linewidth=3, label='True')
     ax3.plot(timestamps, ekf_states[:, 0], 'b--', linewidth=2, label='EKF', alpha=0.7)
@@ -456,7 +392,7 @@ def plot_results(results):
     ax3.legend()
     ax3.grid(True, alpha=0.3)
     
-    # 4. Y Position
+    # Y Position
     ax4 = plt.subplot(3, 3, 4)
     ax4.plot(timestamps, true_states[:, 3], 'g-', linewidth=3, label='True')
     ax4.plot(timestamps, ekf_states[:, 3], 'b--', linewidth=2, label='EKF', alpha=0.7)
@@ -467,7 +403,7 @@ def plot_results(results):
     ax4.legend()
     ax4.grid(True, alpha=0.3)
     
-    # 5. X Velocity
+    # X Velocity
     ax5 = plt.subplot(3, 3, 5)
     ax5.plot(timestamps, true_states[:, 1], 'g-', linewidth=3, label='True')
     ax5.plot(timestamps, ekf_states[:, 1], 'b--', linewidth=2, label='EKF', alpha=0.7)
@@ -478,7 +414,7 @@ def plot_results(results):
     ax5.legend()
     ax5.grid(True, alpha=0.3)
     
-    # 6. Y Velocity
+    # Y Velocity
     ax6 = plt.subplot(3, 3, 6)
     ax6.plot(timestamps, true_states[:, 4], 'g-', linewidth=3, label='True')
     ax6.plot(timestamps, ekf_states[:, 4], 'b--', linewidth=2, label='EKF', alpha=0.7)
@@ -529,10 +465,7 @@ def plot_results(results):
 
 
 if __name__ == '__main__':
-    # Run complete simulation
     results = run_simulation(seed=42)
-    
-    # Plot
     plot_results(results)
     
     print("\n" + "="*70)
